@@ -76,6 +76,7 @@ use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -111,6 +112,11 @@ const TURN_0_FORK_PROMPT: &str = "seed fork context";
 const TURN_1_PROMPT: &str = "spawn a child and continue";
 const TURN_2_NO_WAIT_PROMPT: &str = "follow up without wait";
 const CHILD_PROMPT: &str = "child: do work";
+const PARENT_TARGETED_REVIEW_OVERRIDE: &str = r#"{"review_target":"parent-review"}"#;
+const PARENT_LEGACY_REVIEW_OVERRIDE: &str = r#"{"timestamp":1750000000}"#;
+const ACTIVE_CHILD_STEER_PROMPT: &str = "steer the running child";
+const ACTIVE_CHILD_STEER_MESSAGE: &str = "child: change course";
+const ACTIVE_CHILD_STEER_CALL_ID: &str = "active-child-steer-call";
 const INHERITED_MODEL: &str = "gpt-5.5";
 const INHERITED_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::XHigh;
 const REQUESTED_MODEL: &str = "gpt-5.6-luna";
@@ -446,6 +452,7 @@ async fn setup_turn_one_with_spawned_child(
         child_response_delay,
         /*wait_for_parent_notification*/ true,
         INHERITED_REASONING_EFFORT,
+        /*turn_one_metadata*/ None,
         |builder| builder,
     )
     .await?;
@@ -458,6 +465,7 @@ async fn setup_turn_one_with_custom_spawned_child(
     child_response_delay: Option<Duration>,
     wait_for_parent_notification: bool,
     turn_reasoning_effort: ReasoningEffort,
+    turn_one_metadata: Option<HashMap<String, String>>,
     configure_test: impl FnOnce(
         core_test_support::test_codex::TestCodexBuilder,
     ) -> core_test_support::test_codex::TestCodexBuilder,
@@ -539,7 +547,8 @@ async fn setup_turn_one_with_custom_spawned_child(
             .with_thread_settings(ThreadSettingsOverrides {
                 effort: Some(Some(turn_reasoning_effort)),
                 ..Default::default()
-            }),
+            })
+            .with_responses_metadata(turn_one_metadata),
         )
         .await?;
     wait_for_event(&test.codex, |event| {
@@ -586,6 +595,7 @@ async fn spawn_child_and_capture_snapshot(
         /*child_response_delay*/ None,
         /*wait_for_parent_notification*/ false,
         INHERITED_REASONING_EFFORT,
+        /*turn_one_metadata*/ None,
         configure_test,
     )
     .await?;
@@ -622,6 +632,7 @@ async fn spawned_agent_uses_multi_agent_reasoning_effort_for_requests(
         /*child_response_delay*/ None,
         /*wait_for_parent_notification*/ false,
         selected_reasoning_effort,
+        /*turn_one_metadata*/ None,
         std::convert::identity,
     )
     .await?;
@@ -1090,8 +1101,27 @@ async fn spawned_child_receives_forked_parent_context(
     test.submit_turn(TURN_0_FORK_PROMPT).await?;
     let _ = seed_turn.single_request();
 
-    submit_turn_with_trigger(&test, TURN_1_PROMPT, "composer").await?;
+    submit_turn_with_trigger_and_metadata(
+        &test,
+        TURN_1_PROMPT,
+        "composer",
+        Some(parent_turn_one_client_metadata()),
+    )
+    .await?;
     let parent_body = spawn_turn.single_request().body_json();
+    let parent_metadata = turn_metadata_json(&parent_body)?;
+    assert_eq!(
+        (
+            &parent_metadata["client_surface"],
+            &parent_metadata["misalignment_override"],
+            &parent_metadata["parent_response_id"],
+        ),
+        (
+            &json!("turn-one"),
+            &json!(PARENT_TARGETED_REVIEW_OVERRIDE),
+            &json!("parent-response"),
+        ),
+    );
 
     let child_request = wait_for_request_with_model(&child_request_log, REQUESTED_MODEL).await?;
     assert!(child_request.body_contains_text(TURN_0_FORK_PROMPT));
@@ -1107,6 +1137,33 @@ async fn spawned_child_receives_forked_parent_context(
             &child_metadata["turn_trigger"]
         ),
         (&json!("subagent"), &json!("composer")),
+    );
+    assert_eq!(
+        (
+            &child_metadata["client_surface"],
+            &child_metadata["turn_one_only"]
+        ),
+        (&json!("turn-one"), &json!("yes")),
+    );
+    assert_eq!(child_metadata.get("misalignment_override"), None);
+    assert_eq!(child_metadata.get("parent_response_id"), None);
+    assert_eq!(
+        child_metadata["thread_id"],
+        child_body["client_metadata"]["thread_id"]
+    );
+    assert_ne!(child_metadata["thread_id"], json!("spoofed-thread"));
+    assert_ne!(
+        child_metadata["thread_id"],
+        json!(test.session_configured.thread_id)
+    );
+    assert_eq!(
+        child_metadata["turn_id"],
+        child_body["client_metadata"]["turn_id"]
+    );
+    assert_ne!(child_metadata["turn_id"], json!("spoofed-turn"));
+    assert_ne!(
+        child_metadata["turn_id"],
+        parent_body["client_metadata"]["turn_id"]
     );
     let original_parent_turn_id = parent_body["client_metadata"]["turn_id"]
         .as_str()
@@ -1175,8 +1232,29 @@ async fn spawned_child_receives_forked_parent_context(
     )
     .await;
 
-    submit_turn_with_trigger(&test, "reuse the legacy child", "automation_cron_scheduled").await?;
+    submit_turn_with_trigger_and_metadata(
+        &test,
+        "reuse the legacy child",
+        "automation_cron_scheduled",
+        Some(HashMap::from([
+            ("client_surface".to_string(), "turn-two".to_string()),
+            ("turn_two_only".to_string(), "yes".to_string()),
+            (
+                "misalignment_override".to_string(),
+                PARENT_LEGACY_REVIEW_OVERRIDE.to_string(),
+            ),
+        ])),
+    )
+    .await?;
     let followup_parent_body = parent.single_request().body_json();
+    let followup_parent_metadata = turn_metadata_json(&followup_parent_body)?;
+    assert_eq!(
+        (
+            &followup_parent_metadata["client_surface"],
+            &followup_parent_metadata["misalignment_override"],
+        ),
+        (&json!("turn-two"), &json!(PARENT_LEGACY_REVIEW_OVERRIDE)),
+    );
     let reused_child_body = wait_for_request_with_model(&followup, REQUESTED_MODEL)
         .await?
         .body_json();
@@ -1196,10 +1274,161 @@ async fn spawned_child_receives_forked_parent_context(
             .expect("reused child turn metadata"),
     )?;
     assert_eq!(reused_metadata["turn_trigger"], "automation_cron_scheduled");
+    assert_eq!(
+        (
+            &reused_metadata["client_surface"],
+            &reused_metadata["turn_two_only"]
+        ),
+        (&json!("turn-two"), &json!("yes")),
+    );
+    assert_eq!(reused_metadata.get("turn_one_only"), None);
+    assert_eq!(reused_metadata.get("misalignment_override"), None);
     Ok(())
 }
 
+#[test_case(Some("turn-two"); "new metadata replaces inherited metadata")]
+#[test_case(None; "missing metadata clears inherited metadata")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn steering_active_v1_child_replaces_inherited_client_metadata(
+    turn_two_client_surface: Option<&str>,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let (test, spawned_id, child_request_log) = setup_turn_one_with_custom_spawned_child(
+        &server,
+        json!({
+            "message": CHILD_PROMPT,
+            "model": REQUESTED_MODEL,
+        }),
+        /*child_response_delay*/ Some(Duration::from_secs(3)),
+        /*wait_for_parent_notification*/ false,
+        INHERITED_REASONING_EFFORT,
+        Some(parent_turn_one_client_metadata()),
+        |builder| builder,
+    )
+    .await?;
+    let first_child_body = wait_for_request_with_model(&child_request_log, REQUESTED_MODEL)
+        .await?
+        .body_json();
+    assert_eq!(
+        turn_metadata_json(&first_child_body)?["turn_one_only"],
+        json!("yes")
+    );
+
+    let steer_args = serde_json::to_string(&json!({
+        "target": spawned_id,
+        "message": ACTIVE_CHILD_STEER_MESSAGE,
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, ACTIVE_CHILD_STEER_PROMPT)
+                && !body_contains(req, ACTIVE_CHILD_STEER_CALL_ID)
+        },
+        sse(vec![
+            ev_response_created("resp-parent-steer-1"),
+            ev_function_call_with_namespace(
+                ACTIVE_CHILD_STEER_CALL_ID,
+                MULTI_AGENT_V1_NAMESPACE,
+                "send_input",
+                &steer_args,
+            ),
+            ev_completed("resp-parent-steer-1"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, ACTIVE_CHILD_STEER_CALL_ID),
+        sse(vec![
+            ev_response_created("resp-parent-steer-2"),
+            ev_assistant_message("msg-parent-steer-2", "parent steered child"),
+            ev_completed("resp-parent-steer-2"),
+        ]),
+    )
+    .await;
+    let child_steer_log = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, ACTIVE_CHILD_STEER_MESSAGE)
+                && !body_contains(req, ACTIVE_CHILD_STEER_CALL_ID)
+        },
+        sse(vec![
+            ev_response_created("resp-child-steer"),
+            ev_assistant_message("msg-child-steer", "child changed course"),
+            ev_completed("resp-child-steer"),
+        ]),
+    )
+    .await;
+
+    submit_turn_with_trigger_and_metadata(
+        &test,
+        ACTIVE_CHILD_STEER_PROMPT,
+        "composer",
+        turn_two_client_surface
+            .map(|surface| HashMap::from([("client_surface".to_string(), surface.to_string())])),
+    )
+    .await?;
+    let child = test
+        .thread_manager
+        .get_thread(ThreadId::from_string(&spawned_id)?)
+        .await?;
+    wait_for_event(child.as_ref(), |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let steer_body = wait_for_request_with_model(&child_steer_log, REQUESTED_MODEL)
+        .await?
+        .body_json();
+    assert_eq!(
+        steer_body["client_metadata"]["turn_id"],
+        first_child_body["client_metadata"]["turn_id"]
+    );
+    let steer_metadata = turn_metadata_json(&steer_body)?;
+    assert_eq!(
+        steer_metadata.get("client_surface").and_then(Value::as_str),
+        turn_two_client_surface
+    );
+    assert_eq!(steer_metadata.get("turn_one_only"), None);
+    Ok(())
+}
+
+fn parent_turn_one_client_metadata() -> HashMap<String, String> {
+    HashMap::from([
+        ("client_surface".to_string(), "turn-one".to_string()),
+        ("turn_one_only".to_string(), "yes".to_string()),
+        ("thread_id".to_string(), "spoofed-thread".to_string()),
+        ("turn_id".to_string(), "spoofed-turn".to_string()),
+        (
+            "misalignment_override".to_string(),
+            PARENT_TARGETED_REVIEW_OVERRIDE.to_string(),
+        ),
+        (
+            "parent_response_id".to_string(),
+            "parent-response".to_string(),
+        ),
+    ])
+}
+
+fn turn_metadata_json(body: &Value) -> Result<Value> {
+    let metadata = body["client_metadata"]["x-codex-turn-metadata"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("request should carry turn metadata"))?;
+    Ok(serde_json::from_str(metadata)?)
+}
+
 async fn submit_turn_with_trigger(test: &TestCodex, prompt: &str, trigger: &str) -> Result<()> {
+    submit_turn_with_trigger_and_metadata(test, prompt, trigger, /*responses_metadata*/ None).await
+}
+
+async fn submit_turn_with_trigger_and_metadata(
+    test: &TestCodex,
+    prompt: &str,
+    trigger: &str,
+    responses_metadata: Option<HashMap<String, String>>,
+) -> Result<()> {
     test.codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
@@ -1209,7 +1438,8 @@ async fn submit_turn_with_trigger(test: &TestCodex, prompt: &str, trigger: &str)
             .on_start(TurnStartOptions {
                 turn_trigger: Some(trigger.to_string()),
                 ..Default::default()
-            }),
+            })
+            .with_responses_metadata(responses_metadata),
         )
         .await?;
     wait_for_event(&test.codex, |event| {
@@ -2172,6 +2402,7 @@ async fn spawned_agent_uses_summary_support_for_final_model(
         /*child_response_delay*/ Some(Duration::from_secs(1)),
         /*wait_for_parent_notification*/ false,
         INHERITED_REASONING_EFFORT,
+        /*turn_one_metadata*/ None,
         move |builder| {
             builder.with_config(move |config| {
                 config.model_catalog = Some(model_catalog);
