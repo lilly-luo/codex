@@ -1215,6 +1215,64 @@ fn turn_metadata_state_overlays_compaction_only_on_compaction_requests(
     assert!(regular_json.get("compaction").is_none());
 }
 
+#[test_case::test_case(r#"{"review_target":"RB._~:-opaque"}"#, Some(r#"{"review_target":"RB._~:-opaque"}"#); "target")]
+#[test_case::test_case(r#"{"timestamp":1750000000}"#, None; "legacy_timestamp")]
+fn inherited_client_metadata_scopes_review_overrides_to_their_turn(
+    misalignment_override: &str,
+    expected_override_after_replacement: Option<&str>,
+) {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let state = TurnMetadataState::new(
+        "session-a".to_string(),
+        "thread-a".to_string(),
+        /*forked_from_thread_id*/ None,
+        /*parent_thread_id*/ None,
+        &SessionSource::Exec,
+        /*thread_source*/ None,
+        "turn-a".to_string(),
+        temp_dir.path().abs(),
+        &PermissionProfile::read_only(),
+        WindowsSandboxLevel::Disabled,
+        /*enforce_managed_network*/ false,
+        /*auto_review_enabled*/ false,
+        &model_info_from_slug("gpt-5.4"),
+    );
+    state.set_responses_api_metadata(BTreeMap::from([(
+        "codex_security_surface".to_string(),
+        "sdk".to_string(),
+    )]));
+    state.update_responsesapi_client_metadata(ResponsesApiClientMetadataUpdate {
+        replacement: Some(HashMap::from([
+            ("fiber_run_id".to_string(), "fiber-123".to_string()),
+            (
+                "misalignment_override".to_string(),
+                misalignment_override.to_string(),
+            ),
+            ("parent_response_id".to_string(), "resp-parent".to_string()),
+        ])),
+        ..Default::default()
+    });
+
+    assert_eq!(
+        state
+            .inherited_responsesapi_client_metadata()
+            .into_replacement(),
+        HashMap::from([("fiber_run_id".to_string(), "fiber-123".to_string())])
+    );
+
+    state.update_responsesapi_client_metadata(ResponsesApiClientMetadataUpdate {
+        replacement: Some(HashMap::new()),
+        ..Default::default()
+    });
+    let metadata: Value = serde_json::from_str(&test_turn_metadata_header(&state)).expect("json");
+    assert_eq!(
+        metadata
+            .get("misalignment_override")
+            .and_then(Value::as_str),
+        expected_override_after_replacement
+    );
+}
+
 #[test]
 fn responses_api_metadata_rejects_reserved_keys() {
     for reserved_key in [

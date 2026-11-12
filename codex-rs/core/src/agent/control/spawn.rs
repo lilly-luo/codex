@@ -964,9 +964,14 @@ impl LocalAgentControl {
         let input_admission_started_at = Instant::now();
         match initial_input {
             SpawnInitialInput::UserInput(input) => {
-                self.send_input(new_thread.thread_id, input, start_options)
-                    .await
-                    .map_err(|err| err.with_agent_context(AgentErrorContext::InputAdmission))?;
+                self.send_input(
+                    new_thread.thread_id,
+                    input,
+                    start_options,
+                    options.responsesapi_client_metadata,
+                )
+                .await
+                .map_err(|err| err.with_agent_context(AgentErrorContext::InputAdmission))?;
             }
             SpawnInitialInput::InterAgentCommunication(communication, context) => {
                 self.send_inter_agent_communication_after_capacity_check(

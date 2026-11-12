@@ -116,7 +116,14 @@ impl AgentControl for LocalAgentControl {
                     } else {
                         None
                     };
-                    let submission_id = self.send_input(target, input, start_options).await?;
+                    let submission_id = self
+                        .send_input(
+                            target,
+                            input,
+                            start_options,
+                            /*responsesapi_client_metadata*/ None,
+                        )
+                        .await?;
                     (receiver.unwrap_or_default(), submission_id)
                 }
                 AgentInput::Message { message, mode } => {

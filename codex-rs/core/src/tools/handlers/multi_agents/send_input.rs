@@ -105,6 +105,10 @@ impl Handler {
                     cyber_access_program: turn.cyber_access_program,
                     ..Default::default()
                 },
+                Some(
+                    turn.turn_metadata_state
+                        .inherited_responsesapi_client_metadata(),
+                ),
             )
             .await
             .map_err(|err| collab_agent_error(receiver_thread_id, err));

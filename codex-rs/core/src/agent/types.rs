@@ -3,6 +3,7 @@
 
 use crate::context::MultiAgentRoleInstructions;
 use crate::environment_selection::TurnEnvironmentSnapshot;
+use crate::turn_metadata::InheritedResponsesApiClientMetadata;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::AgentStatus;
@@ -49,6 +50,7 @@ pub struct SpawnAgentOptions {
     pub cyber_access_program: Option<CyberAccessProgram>,
     /// Parent selections apply to the first turn and may need adapting to the child's model.
     pub cyber_access_program_source: SpawnProgramSource,
+    pub(crate) responsesapi_client_metadata: Option<InheritedResponsesApiClientMetadata>,
 }
 
 /// Identity and status observed from a loaded agent, without a handle to its runtime.

@@ -583,6 +583,7 @@ async fn send_input_errors_when_manager_dropped() {
                 text_elements: Vec::new(),
             }],
             Default::default(),
+            /*responsesapi_client_metadata*/ None,
         )
         .await
         .expect_err("send_input should fail without a manager");
@@ -970,6 +971,7 @@ async fn send_input_errors_when_thread_missing() {
                 text_elements: Vec::new(),
             }],
             Default::default(),
+            /*responsesapi_client_metadata*/ None,
         )
         .await
         .expect_err("send_input should fail for missing thread");
@@ -1054,6 +1056,7 @@ async fn send_input_submits_user_message() {
                 text_elements: Vec::new(),
             }],
             Default::default(),
+            /*responsesapi_client_metadata*/ None,
         )
         .await
         .expect("send_input should succeed");

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -49,6 +50,7 @@ const CODEX_VERSION_KEY: &str = "codex_version";
 const REASONING_EFFORT_KEY: &str = "reasoning_effort";
 const USER_INPUT_REQUESTED_DURING_TURN_KEY: &str = "user_input_requested_during_turn";
 const WORKSPACE_KIND_KEY: &str = "workspace_kind";
+const PARENT_TURN_ONLY_METADATA_KEYS: [&str; 2] = ["misalignment_override", "parent_response_id"];
 
 fn is_targeted_continuation(value: &str) -> bool {
     serde_json::from_str::<Value>(value).is_ok_and(|value| value.get("review_target").is_some())
@@ -153,6 +155,17 @@ pub async fn detached_memory_responses_metadata(
     };
     record_policy_metadata(permission_profile, cwd.as_path(), &mut metadata);
     metadata
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct InheritedResponsesApiClientMetadata {
+    replacement: HashMap<String, String>,
+}
+
+impl InheritedResponsesApiClientMetadata {
+    pub(crate) fn into_replacement(self) -> HashMap<String, String> {
+        self.replacement
+    }
 }
 
 #[derive(Debug)]
@@ -424,6 +437,22 @@ impl TurnMetadataState {
             // Steering may update other metadata, but cannot replace the reviewed block.
             current.insert("misalignment_override".to_string(), continuation);
         }
+    }
+
+    pub(crate) fn inherited_responsesapi_client_metadata(
+        &self,
+    ) -> InheritedResponsesApiClientMetadata {
+        let mut replacement: HashMap<String, String> = self
+            .responsesapi_client_metadata
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        for key in PARENT_TURN_ONLY_METADATA_KEYS {
+            replacement.remove(key);
+        }
+        InheritedResponsesApiClientMetadata { replacement }
     }
 
     pub(crate) fn set_responses_api_metadata(

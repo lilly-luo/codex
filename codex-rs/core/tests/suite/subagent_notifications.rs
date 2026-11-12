@@ -1301,7 +1301,7 @@ async fn steering_active_v1_child_replaces_inherited_client_metadata(
             "message": CHILD_PROMPT,
             "model": REQUESTED_MODEL,
         }),
-        /*child_response_delay*/ Some(Duration::from_secs(3)),
+        /*child_response_delay*/ Some(Duration::from_secs(5)),
         /*wait_for_parent_notification*/ false,
         INHERITED_REASONING_EFFORT,
         Some(parent_turn_one_client_metadata()),

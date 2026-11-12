@@ -20,6 +20,7 @@ use crate::thread_manager::ResumeThreadWithHistoryOptions;
 use crate::thread_manager::ThreadIdGenerator;
 use crate::thread_manager::ThreadManagerState;
 use crate::thread_manager::default_thread_id_generator;
+use crate::turn_metadata::InheritedResponsesApiClientMetadata;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
@@ -139,13 +140,17 @@ impl LocalAgentControl {
         agent_id: ThreadId,
         input: Vec<UserInput>,
         start_options: TurnStartOptions,
+        responsesapi_client_metadata: Option<InheritedResponsesApiClientMetadata>,
     ) -> CodexResult<String> {
         let state = self.runtime.upgrade()?;
         let thread = state.get_thread(agent_id).await?;
-        let result = match thread
-            .start_or_steer_turn(TurnInputRequest::user_input(input).on_start(start_options))
-            .await
-        {
+        let request = TurnInputRequest::user_input(input)
+            .on_start(start_options)
+            .with_responses_metadata(
+                responsesapi_client_metadata
+                    .map(InheritedResponsesApiClientMetadata::into_replacement),
+            );
+        let result = match thread.start_or_steer_turn(request).await {
             Ok(TurnInputSubmission::Started { turn_id, .. }) => Ok(turn_id),
             Ok(TurnInputSubmission::Accepted) => unreachable!("user input returns a turn outcome"),
             Ok(TurnInputSubmission::Steered { .. }) => {
